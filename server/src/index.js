@@ -8,21 +8,37 @@ const { createClient } = require('@supabase/supabase-js');
 const upload = multer({ dest: 'uploads/' });
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_URL }));
+app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(express.json());
 
-// Initialize Supabase Client with corrected project URL and service role key
 const supabase = createClient(
   'https://ccmqhkesiqangiavcqmd.supabase.co',
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Receipt Scan & Save Endpoint
-app.post('/api/expenses/scan', upload.single('receipt'), async (req, res) => {
+// Auth Middleware to extract user from Supabase token
+const requireAuth = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid authorization token' });
+  }
+
+  const token = authHeader.split(' ')[1];
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    return res.status(401).json({ error: 'Unauthorized user' });
+  }
+
+  req.user = user;
+  next();
+};
+
+// Receipt Scan & Save Endpoint (Protected)
+app.post('/api/expenses/scan', requireAuth, upload.single('receipt'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
     
-    // Run OCR via Tesseract
     const { data: { text } } = await Tesseract.recognize(req.file.path, 'eng');
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     
@@ -59,10 +75,11 @@ app.post('/api/expenses/scan', upload.single('receipt'), async (req, res) => {
 
     const merchantName = lines[0] || 'Unknown Merchant';
 
-    // Save to Supabase Database
+    // Save to Supabase with user_id attached
     const { data: receiptData, error: receiptError } = await supabase
       .from('receipts')
       .insert([{
+        user_id: req.user.id,
         merchant_name: merchantName,
         subtotal,
         tax_amount: tax,
@@ -105,8 +122,8 @@ app.post('/api/expenses/scan', upload.single('receipt'), async (req, res) => {
   }
 });
 
-// Fetch all past receipts with their line items for history view
-app.get('/api/expenses', async (req, res) => {
+// Fetch past receipts for logged-in user only (Protected)
+app.get('/api/expenses', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('receipts')
@@ -124,6 +141,7 @@ app.get('/api/expenses', async (req, res) => {
           price
         )
       `)
+      .eq('user_id', req.user.id)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
