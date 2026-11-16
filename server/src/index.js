@@ -105,5 +105,35 @@ app.post('/api/expenses/scan', upload.single('receipt'), async (req, res) => {
   }
 });
 
+// Fetch all past receipts with their line items for history view
+app.get('/api/expenses', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('receipts')
+      .select(`
+        id,
+        merchant_name,
+        subtotal,
+        tax_amount,
+        tip_amount,
+        total_amount,
+        created_at,
+        receipt_items (
+          id,
+          name,
+          price
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    res.json(data);
+  } catch (err) {
+    console.error('Error fetching receipt history:', err);
+    res.status(500).json({ error: 'Failed to load receipt history' });
+  }
+});
+
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
